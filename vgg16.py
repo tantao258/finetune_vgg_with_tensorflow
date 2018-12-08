@@ -1,125 +1,166 @@
-import inspect
-import os
-
 import numpy as np
 import tensorflow as tf
-import time
-
-VGG_MEAN = [103.939, 116.779, 123.68]
 
 
-class Vgg16:
-    def __init__(self, vgg16_npy_path=None):
-        if vgg16_npy_path is None:
-            path = inspect.getfile(Vgg16)
-            path = os.path.abspath(os.path.join(path, os.pardir))
-            path = os.path.join(path, "vgg16.npy")
-            vgg16_npy_path = path
-            print(path)
+class VGG16(object):
+    def __init__(self, keep_prob, num_classes, train_layers, learning_rate=0.01, model="train", weights_path='DEFAULT'):
+        """Create the graph of the VGG16 model.
+       """
+        # Parse input arguments into class variables
+        if weights_path == 'DEFAULT':
+            self.WEIGHTS_PATH = 'bvlc_alexnet.npy'
+        else:
+            self.WEIGHTS_PATH = weights_path
+        self.train_layers = train_layers
 
-        self.data_dict = np.load(vgg16_npy_path, encoding='latin1').item()
-        print("npy file loaded")
+        with tf.variable_scope("input"):
+            self.x_input = tf.placeholder(tf.float32, [None, 224, 224, 3], name="x_input")
+            self.y_input = tf.placeholder(tf.float32, [None, num_classes], name="y_input")
+            self.keep_prob = tf.placeholder(tf.float32, name="keep_prob")
 
-    def build(self, rgb):
+        conv1_1 = conv(self.x_input, 3, 3, 64, 1, 1, name="conv1_1")
+        conv1_2 = conv(conv1_1, 3, 3, 64, 1, 1, name="conv1_2")
+        pool1 = max_pool(conv1_2, 2, 2, 2, 2, name='pool1')
+
+        conv2_1 = conv(pool1, 3, 3, 128, 1, 1, name="conv2_1")
+        conv2_2 = conv(conv2_1, 3, 3, 128, 1, 1, name="conv2_2")
+        pool2 = max_pool(conv2_2, 2, 2, 2, 2, name='pool2')
+
+        conv3_1 = conv(pool2, 3, 3, 256, 1, 1, name="conv3_1")
+        conv3_2 = conv(conv3_1, 3, 3, 256, 1, 1, name="conv3_2")
+        conv3_3 = conv(conv3_2, 3, 3, 256, 1, 1, name="conv3_3")
+        pool3 = max_pool(conv3_3, 2, 2, 2, 2, name='pool3')
+
+        conv4_1 = conv(pool3, 3, 3, 512, 1, 1, name="conv4_1")
+        conv4_2 = conv(conv4_1, 3, 3, 512, 1, 1, name="conv4_2")
+        conv4_3 = conv(conv4_2, 3, 3, 512, 1, 1, name="conv4_3")
+        pool4 = max_pool(conv4_3, 2, 2, 2, 2, name='pool4')
+
+        conv5_1 = conv(pool4, 3, 3, 512, 1, 1, name="conv5_1")
+        conv5_2 = conv(conv5_1, 3, 3, 512, 1, 1, name="conv5_2")
+        conv5_3 = conv(conv5_2, 3, 3, 512, 1, 1, name="conv5_3")
+        pool5 = max_pool(conv5_3, 2, 2, 2, 2, name='pool5')
+
+        fcIn = tf.reshape(pool5, [-1, 7*7*512])
+        fc6 = fc(fcIn, 512, 4096, name="fc6", relu=True)
+        dropout1 = tf.nn.dropout(fc6, keep_prob)
+
+        fc7 = fc(dropout1, 4096, 4096, name="fc7", relu=True)
+        dropout2 = tf.nn.dropout(fc7, keep_prob)
+
+        self.fc8 = fc(dropout2, 4096, num_classes, name="fc8")
+
+        if model == "train" or model == "val":
+            with tf.name_scope("loss"):
+                self.loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.fc8, labels=self.y_input))
+
+            with tf.name_scope("train"):
+                self.global_step = tf.Variable(0, name="global_step", trainable=False)
+                var_list = [v for v in tf.trainable_variables() if v.name.split('/')[0] in train_layers]
+                gradients = tf.gradients(self.loss, var_list)
+                self.grads_and_vars = list(zip(gradients, var_list))
+                optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+                self.train_op = optimizer.apply_gradients(grads_and_vars=self.grads_and_vars, global_step=self.global_step)
+
+            with tf.name_scope("prediction"):
+                self.prediction = tf.argmax(self.fc8, 1, name="prediction")
+
+            with tf.name_scope("accuracy"):
+                correct_prediction = tf.equal(self.prediction, tf.argmax(self.y_input, 1))
+                self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"), name="accuracy")
+
+    def load_initial_weights(self, session):
+        """Load weights from file into network.
         """
-        load variable from npy to build the VGG
+        # Load the weights into memory
+        weights_dict = np.load(self.WEIGHTS_PATH, encoding='bytes').item()
 
-        :param rgb: rgb image [batch, height, width, 3] values scaled [0, 1]
-        """
+        # Loop over all layer names stored in the weights dict
+        for op_name in weights_dict:
 
-        start_time = time.time()
-        print("build model started")
-        rgb_scaled = rgb * 255.0
+            # Check if layer should be trained from scratch
+            if op_name not in self.train_layers:
 
-        # Convert RGB to BGR
-        red, green, blue = tf.split(axis=3, num_or_size_splits=3, value=rgb_scaled)
-        assert red.get_shape().as_list()[1:] == [224, 224, 1]
-        assert green.get_shape().as_list()[1:] == [224, 224, 1]
-        assert blue.get_shape().as_list()[1:] == [224, 224, 1]
-        bgr = tf.concat(axis=3, values=[
-            blue - VGG_MEAN[0],
-            green - VGG_MEAN[1],
-            red - VGG_MEAN[2],
-        ])
-        assert bgr.get_shape().as_list()[1:] == [224, 224, 3]
+                with tf.variable_scope(op_name, reuse=True):
 
-        self.conv1_1 = self.conv_layer(bgr, "conv1_1")
-        self.conv1_2 = self.conv_layer(self.conv1_1, "conv1_2")
-        self.pool1 = self.max_pool(self.conv1_2, 'pool1')
+                    # Assign weights/biases to their corresponding tf variable
+                    for data in weights_dict[op_name]:
 
-        self.conv2_1 = self.conv_layer(self.pool1, "conv2_1")
-        self.conv2_2 = self.conv_layer(self.conv2_1, "conv2_2")
-        self.pool2 = self.max_pool(self.conv2_2, 'pool2')
+                        # Biases
+                        if len(data.shape) == 1:
+                            var = tf.get_variable('biases', trainable=False)
+                            session.run(var.assign(data))
 
-        self.conv3_1 = self.conv_layer(self.pool2, "conv3_1")
-        self.conv3_2 = self.conv_layer(self.conv3_1, "conv3_2")
-        self.conv3_3 = self.conv_layer(self.conv3_2, "conv3_3")
-        self.pool3 = self.max_pool(self.conv3_3, 'pool3')
+                        # Weights
+                        else:
+                            var = tf.get_variable('weights', trainable=False)
+                            session.run(var.assign(data))
 
-        self.conv4_1 = self.conv_layer(self.pool3, "conv4_1")
-        self.conv4_2 = self.conv_layer(self.conv4_1, "conv4_2")
-        self.conv4_3 = self.conv_layer(self.conv4_2, "conv4_3")
-        self.pool4 = self.max_pool(self.conv4_3, 'pool4')
 
-        self.conv5_1 = self.conv_layer(self.pool4, "conv5_1")
-        self.conv5_2 = self.conv_layer(self.conv5_1, "conv5_2")
-        self.conv5_3 = self.conv_layer(self.conv5_2, "conv5_3")
-        self.pool5 = self.max_pool(self.conv5_3, 'pool5')
+def max_pool(x, filter_height, filter_width, stride_y, stride_x, name, padding='SAME'):
+    """Create a max pooling layer."""
+    return tf.nn.max_pool(value=x,
+                          ksize=[1, filter_height, filter_width, 1],
+                          strides=[1, stride_y, stride_x, 1],
+                          padding=padding,
+                          name=name)
 
-        self.fc6 = self.fc_layer(self.pool5, "fc6")
-        assert self.fc6.get_shape().as_list()[1:] == [4096]
-        self.relu6 = tf.nn.relu(self.fc6)
 
-        self.fc7 = self.fc_layer(self.relu6, "fc7")
-        self.relu7 = tf.nn.relu(self.fc7)
+def conv(x, filter_height, filter_width, num_filters, stride_y, stride_x, name, padding='SAME', groups=1):
+    # Get number of input channels
+    input_channels = int(x.get_shape()[-1])
 
-        self.fc8 = self.fc_layer(self.relu7, "fc8")
+    # Create lambda function for the convolution
+    convolve = lambda i, k: tf.nn.conv2d(input=i, filter=k, strides=[1, stride_y, stride_x, 1], padding=padding)
 
-        self.prob = tf.nn.softmax(self.fc8, name="prob")
+    with tf.variable_scope(name) as scope:
+        # Create tf variables for the weights and biases of the conv layer
+        weights = tf.get_variable(name='weights',
+                                  shape=[filter_height, filter_width, input_channels/groups, num_filters])
+        biases = tf.get_variable(name='biases',
+                                 shape=[num_filters])
 
-        self.data_dict = None
-        print(("build model finished: %ds" % (time.time() - start_time)))
+    if groups == 1:
+        conv = convolve(x, weights)
 
-    def avg_pool(self, bottom, name):
-        return tf.nn.avg_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
+    # In the cases of multiple groups, split inputs & weights and
+    else:
+        # Split input and weights and convolve them separately
+        input_groups = tf.split(axis=3, num_or_size_splits=groups, value=x)
+        weight_groups = tf.split(axis=3, num_or_size_splits=groups, value=weights)
+        output_groups = [convolve(i, k) for i, k in zip(input_groups, weight_groups)]
 
-    def max_pool(self, bottom, name):
-        return tf.nn.max_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
+        # Concat the convolved output together again
+        conv = tf.concat(axis=3, values=output_groups)
 
-    def conv_layer(self, bottom, name):
-        with tf.variable_scope(name):
-            filt = self.get_conv_filter(name)
+    # Add biases
+    bias = tf.reshape(tf.nn.bias_add(conv, biases), tf.shape(conv))
 
-            conv = tf.nn.conv2d(bottom, filt, [1, 1, 1, 1], padding='SAME')
+    # Apply relu function
+    relu = tf.nn.relu(bias, name=scope.name)
 
-            conv_biases = self.get_bias(name)
-            bias = tf.nn.bias_add(conv, conv_biases)
+    return relu
 
-            relu = tf.nn.relu(bias)
-            return relu
 
-    def fc_layer(self, bottom, name):
-        with tf.variable_scope(name):
-            shape = bottom.get_shape().as_list()
-            dim = 1
-            for d in shape[1:]:
-                dim *= d
-            x = tf.reshape(bottom, [-1, dim])
+def fc(x, num_in, num_out, name, relu=True):
+    """Create a fully connected layer."""
+    with tf.variable_scope(name) as scope:
 
-            weights = self.get_fc_weight(name)
-            biases = self.get_bias(name)
+        # Create tf variables for the weights and biases
+        weights = tf.get_variable(name='weights',
+                                  shape=[num_in, num_out],
+                                  trainable=True)
+        biases = tf.get_variable(name='biases',
+                                 shape=[num_out],
+                                 trainable=True)
 
-            # Fully connected layer. Note that the '+' operation automatically
-            # broadcasts the biases.
-            fc = tf.nn.bias_add(tf.matmul(x, weights), biases)
+        # Matrix multiply weights and inputs and add bias
+        act = tf.nn.xw_plus_b(x, weights, biases, name=scope.name)
 
-            return fc
+    if relu:
+        # Apply ReLu non linearity
+        relu = tf.nn.relu(act)
+        return relu
+    else:
+        return act
 
-    def get_conv_filter(self, name):
-        return tf.constant(self.data_dict[name][0], name="filter")
-
-    def get_bias(self, name):
-        return tf.constant(self.data_dict[name][1], name="biases")
-
-    def get_fc_weight(self, name):
-        return tf.constant(self.data_dict[name][0], name="weights")
