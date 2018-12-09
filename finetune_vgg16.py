@@ -13,7 +13,7 @@ Configuration Part.
 # Parameters
 tf.app.flags.DEFINE_string("train_file", '/path/to/train.txt', "the path of train data")
 tf.app.flags.DEFINE_string("val_file", '/path/to/val.txt', "the path of val data")
-tf.app.flags.DEFINE_float("learning_rate", 0.01, "learn_rate(default:0.01)")
+tf.app.flags.DEFINE_float("learning_rate", 0.001, "learn_rate(default:0.001)")
 tf.app.flags.DEFINE_integer("num_epochs", 10, "num_epoches(default:10)")
 tf.app.flags.DEFINE_integer("batch_size", 128, "batch_size(default:128)")
 tf.app.flags.DEFINE_integer("num_classes", 2, "num_classes(default:2)")
